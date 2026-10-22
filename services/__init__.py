@@ -1,0 +1,1 @@
+"""Geometría, imágenes y exportación."""
