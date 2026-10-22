@@ -5,8 +5,10 @@ from threading import Event
 
 from PIL import Image
 import pytest
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtWidgets import QApplication, QDialogButtonBox, QMessageBox
 
+from models.entities import Template
 from services.export import ExportJob, ExportWorker, export_jobs
 from storage.repository import Repository
 from ui.dialogs import ExportOptions, TemplateForm, TemplateManager
@@ -110,10 +112,13 @@ def test_template_form_and_manager(qtbot, repository):
     qtbot.addWidget(form)
     form.width.setValue(1200)
     form.height.setValue(800)
+    form.geometry_fields["crop_width"].setValue(1200)
+    form.geometry_fields["crop_height"].setValue(800)
     assert form.ratio.text() == "3:2"
     form.name.setText("Mi plantilla")
     form.validate()
     assert form.result() == form.DialogCode.Accepted
+    assert form.saved_template.geometry == (0, 0, 1200, 800)
     template = repository.create_template(form.name.text(), form.width.value(), form.height.value())
     manager = TemplateManager(repository)
     qtbot.addWidget(manager)
@@ -137,6 +142,174 @@ def test_svg_export_option_and_quality(qtbot):
     assert not dialog.quality.isEnabled()
     dialog.format.setCurrentText("WEBP")
     assert dialog.quality.isEnabled()
+
+
+def test_save_current_crop_as_template_and_repeat_after_restart(qtbot, tmp_path):
+    window, folder = create_window(qtbot, tmp_path)
+    assert not window.save_template_button.isEnabled()
+    window.add_from_template()
+    crop = window.active_crop()
+    geometry = (12.123456789012345, 4.987654321098765, 70.12345678901234, 70.12345678901234)
+    window.geometry_changed(crop.id, geometry, True)
+    before = replace(crop)
+    default = window.repository.default_template_id()
+
+    def fill_and_save():
+        form = QApplication.activeModalWidget()
+        try:
+            assert isinstance(form, TemplateForm)
+            assert form.name.text() == before.name
+            assert form.fixed_geometry.isChecked()
+            form.name.setText("Encuadre repetible")
+            qtbot.mouseClick(form.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Save), Qt.MouseButton.LeftButton)
+        finally:
+            if form.isVisible():
+                form.reject()
+
+    QTimer.singleShot(0, fill_and_save)
+    qtbot.mouseClick(window.save_template_button, Qt.MouseButton.LeftButton)
+    saved = window.templates[window.template_combo.currentIndex()]
+    assert saved.name == "Encuadre repetible" and saved.geometry == geometry
+    assert "Geometría fija" in window.template_combo.currentText()
+    assert window.repository.default_template_id() == default
+    assert window.crops == [before]  # No cambia el recorte ni su referencia de origen.
+    assert window.repository.crops(window.current_image.id) == [before]
+    # Aplicarla a otra imagen y repetirla en la misma imagen.
+    window.image_list.setCurrentRow(1)
+    qtbot.mouseClick(window.template_button, Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(window.template_button, Qt.MouseButton.LeftButton)
+    assert len(window.crops) == 2 and window.crops[0].id != window.crops[1].id
+    for applied in window.crops:
+        assert (applied.x, applied.y, applied.width, applied.height) == geometry
+        assert applied.template_id == saved.id and applied.locked
+    window.close()
+    Image.new("RGB", (320, 240)).save(folder / "mayor.png")
+    restored = MainWindow(Repository(tmp_path / "state.sqlite3"))
+    qtbot.addWidget(restored)
+    restored.show()
+    restored.open_folder(folder)
+    restored.refresh_templates(saved.id)
+    restored.add_from_template()
+    applied = restored.active_crop()
+    assert restored.current_image.relative_path == "mayor.png"
+    assert (applied.x, applied.y, applied.width, applied.height) == geometry
+    assert (applied.output_width, applied.output_height) == (1000, 1000)
+    assert restored.repository.default_template_id() == default
+
+
+@pytest.mark.parametrize("geometry", [(0, 0, 200, 200), (155, 0, 10, 10), (0, 115, 10, 10)])
+def test_outside_template_popup_creates_nothing(qtbot, tmp_path, monkeypatch, geometry):
+    window, _ = create_window(qtbot, tmp_path)
+    window.add_from_template()
+    before = replace(window.active_crop())
+    template = window.repository.add_template(Template("outside", "Fuera", 1000, 1000, *geometry))
+    window.refresh_templates(template.id)
+    messages = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text: messages.append(text))
+    qtbot.mouseClick(window.template_button, Qt.MouseButton.LeftButton)
+    assert messages == ["La plantilla es demasiado grande para la imagen actual"]
+    assert window.crops == [before]
+    assert window.active_id == before.id and not window.dirty
+    assert window.repository.crops(window.current_image.id) == [before]
+
+
+def test_save_template_cancel_and_mismatch_leave_original_unchanged(qtbot, tmp_path, monkeypatch):
+    window, _ = create_window(qtbot, tmp_path)
+    window.add_from_template()
+    before = replace(window.active_crop())
+    templates = window.repository.templates()
+    selected = window.template_combo.currentData()
+    monkeypatch.setattr(TemplateForm, "exec", lambda form: form.DialogCode.Rejected)
+    window.save_crop_as_template()
+    assert window.repository.templates() == templates and window.crops == [before]
+    assert window.template_combo.currentData() == selected
+    window.output_width.setValue(1200)
+    invalid = replace(window.active_crop())
+    messages = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text: messages.append(text))
+    window.save_crop_as_template()
+    assert len(messages) == 1 and "Corrige la geometría" in messages[0]
+    assert window.crops == [invalid] and window.repository.templates() == templates
+
+
+def test_form_precision_editing_and_saving_failure_recovery(qtbot, repository, monkeypatch):
+    base = Template("precision", "Exacta", 1200, 800, 1.12345678901234, 2.98765432109876,
+                    120.1234567890123, 80.0823045260082)
+    attempts = 0
+
+    def save(candidate):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("Disco lleno")
+        return repository.add_template(candidate)
+
+    form = TemplateForm(base, on_save=save)
+    qtbot.addWidget(form)
+    form.show()
+    errors = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda parent, title, text: errors.append(text))
+    form.validate()
+    assert errors == ["Disco lleno"] and form.isVisible()
+    assert form.name.text() == base.name and form.saved_template is None
+    form.validate()
+    assert form.result() == form.DialogCode.Accepted
+    assert form.saved_template == base and base in repository.templates()
+    edit = TemplateForm(base, on_save=repository.update_template)
+    qtbot.addWidget(edit)
+    edit.geometry_fields["crop_x"].setValue(12.5)
+    edit.validate()
+    expected = replace(base, crop_x=12.5)
+    assert edit.saved_template == expected and expected in repository.templates()
+
+
+def test_template_form_legacy_mode_and_validation(qtbot, repository, monkeypatch):
+    base = repository.templates()[0]
+    form = TemplateForm(base, on_save=repository.update_template)
+    qtbot.addWidget(form)
+    assert not form.fixed_geometry.isChecked() and not form.geometry_widget.isEnabled()
+    form.name.setText("Antigua renombrada")
+    form.validate()
+    assert form.saved_template.geometry is None
+    fixed = TemplateForm(form.saved_template, on_save=repository.update_template)
+    qtbot.addWidget(fixed)
+    fixed.fixed_geometry.setChecked(True)
+    fixed.geometry_fields["crop_x"].setValue(15)
+    fixed.geometry_fields["crop_y"].setValue(25)
+    fixed.geometry_fields["crop_width"].setValue(60)
+    fixed.geometry_fields["crop_height"].setValue(40)
+    errors = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text: errors.append(text))
+    fixed.validate()
+    assert len(errors) == 1 and fixed.saved_template is None
+    assert next(t for t in repository.templates() if t.id == base.id).geometry is None
+    fixed.geometry_fields["crop_height"].setValue(60)
+    fixed.validate()
+    assert fixed.saved_template.geometry == (15, 25, 60, 60)
+    centered = TemplateForm(fixed.saved_template, on_save=repository.update_template)
+    qtbot.addWidget(centered)
+    centered.fixed_geometry.setChecked(False)
+    centered.validate()
+    assert centered.saved_template.geometry is None
+
+
+def test_first_template_saved_from_crop_becomes_default(qtbot, tmp_path, monkeypatch):
+    window, _ = create_window(qtbot, tmp_path)
+    for template in window.repository.templates():
+        window.repository.delete_template(template.id)
+    window.refresh_templates()
+    window.manual_crop((10, 10, 60, 60))
+    source = replace(window.active_crop())
+
+    def save(form):
+        form.validate()
+        return form.result()
+
+    monkeypatch.setattr(TemplateForm, "exec", save)
+    window.save_crop_as_template()
+    assert window.template_combo.count() == 1
+    assert window.repository.default_template_id() == window.template_combo.currentData()
+    assert window.crops == [source]
 
 
 def test_export_worker_completes_through_qt_signals(qtbot, tmp_path):

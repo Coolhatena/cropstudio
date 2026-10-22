@@ -10,10 +10,21 @@ def centered_rect(image_width: float, image_height: float, ratio: float) -> tupl
 
 
 def from_template(template: Template, image_id: str, width: int, height: int, number: int) -> Crop:
-    x, y, w, h = centered_rect(width, height, template.width / template.height)
+    if template.geometry is not None:
+        x, y, w, h = template.geometry
+        if x + w > width or y + h > height:
+            raise ValueError("La plantilla es demasiado grande para la imagen actual")
+    else:
+        x, y, w, h = centered_rect(width, height, template.width / template.height)
     a, b = template.ratio
     return Crop(identifier(), image_id, f"{template.name} {number}", x, y, w, h,
                 template.width, template.height, a, b, True, template.id)
+
+
+def template_from_crop(crop: Crop) -> Template:
+    """Captura los valores del modelo sin redondear ni modificar el recorte."""
+    return Template(identifier(), crop.name, crop.output_width, crop.output_height,
+                    crop.x, crop.y, crop.width, crop.height)
 
 
 def fit_rect(x: float, y: float, width: float, height: float, iw: float, ih: float,

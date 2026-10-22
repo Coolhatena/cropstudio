@@ -29,7 +29,25 @@ uv run python main.py
 5. **Exportar todos** permite seleccionar proyecto completo o imagen actual, formato, calidad y destino.
    La exportación muestra progreso y permite cancelar; los archivos terminados se conservan.
 
+Para repetir un encuadre, selecciona un recorte y pulsa **Guardar recorte como plantilla**.
+El formulario copia su nombre, X, Y, ancho y alto del recorte, y dimensiones de salida. Puedes
+editarlo antes de guardar. El recorte original se conserva y la nueva plantilla queda seleccionada.
+En otra imagen, pulsa **Nuevo recorte desde plantilla** para repetir el rectángulo exactamente,
+sin escalarlo ni centrarlo de nuevo, aunque la imagen tenga otras dimensiones.
+
+Las plantillas nuevas tienen activada **Guardar posición y tamaño**. Sus coordenadas son absolutas
+y conservan su precisión decimal al copiar un recorte; el ancho y alto del recorte son independientes
+de la resolución de salida, pero deben tener la misma proporción. Si no coinciden, corrige el
+recorte antes de guardarlo como plantilla. Si el rectángulo no cabe en la imagen de destino, aparece
+**“La plantilla es demasiado grande para la imagen actual”** y no se crea ningún recorte.
+
+Las plantillas anteriores y las cuatro iniciales mantienen **Centrado automático**. Puedes asignarles
+una geometría desde **Gestionar plantillas → Editar**, activando **Guardar posición y tamaño**.
+Al desactivar esta opción se recupera el centrado automático. El selector y el gestor indican el modo
+de cada plantilla. Las plantillas siguen siendo globales y se aplican sobre la imagen actual.
+
 Cada recorte conserva su resolución y proporción aunque cambies o borres la plantilla original.
+También conserva su posición y tamaño aunque se edite la geometría de su plantilla.
 Las imágenes pequeñas se amplían a la resolución pedida. Si geometría y salida no coinciden,
 **Ajustar a resolución de salida** corrige el rectángulo explícitamente. Los recortes incompatibles
 se omiten con un error durante la exportación. Los nombres repetidos reciben sufijos sin sobrescribir.
@@ -44,6 +62,8 @@ imagen de píxeles; no se convierte en trazados vectoriales. La calidad solo se 
 
 La geometría usa píxeles de la imagen original después de aplicar EXIF, origen superior izquierdo,
 coordenadas decimales y extremos derecho/inferior exclusivos. La resolución de salida es independiente.
+El esquema SQLite se actualiza automáticamente de versión 1 a 2 mediante una transacción, conservando
+los datos y la plantilla predeterminada. Usa la versión actualizada del programa para abrir esa base.
 No cambies externamente las dimensiones de una imagen después de definir sus recortes: si dejan de
 ser válidos, debes ajustarlos antes de exportar.
 
@@ -66,7 +86,9 @@ Distribuye la carpeta completa `dist\CropStudio`, no solo el `.exe`. El ejecutab
 está firmado digitalmente. Las pruebas Qt usan la plataforma `offscreen` y bases SQLite temporales;
 incluyen un flujo con 100 imágenes, reinicio, exportación y comparación de originales.
 
-Validación local completada en Windows 11 con Python 3.14.7: **67 pruebas aprobadas**, empaquetado
+Validación local completada en Windows 11 con Python 3.14.7: **103 pruebas aprobadas**, empaquetado
 con PyInstaller y arranque/cierre del ejecutable con la plataforma nativa de Windows (código 0,
 cuatro plantillas disponibles). La interacción se comprobó con pruebas Qt automatizadas y una
 captura del editor; no se realizó una sesión manual prolongada ni se probó en otros equipos.
+La suite incluye migración y rollback del esquema, geometría fija con precisión decimal, creación
+desde un recorte, repetición en distintas imágenes, avisos de límites y exportación JPG/PNG/WEBP/SVG.

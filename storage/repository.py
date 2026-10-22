@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from dataclasses import astuple
+from dataclasses import astuple, replace
 from pathlib import Path
 
 from models.entities import Crop, ImageRecord, Project, Template, identifier
@@ -18,11 +18,30 @@ class Repository:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.execute("PRAGMA busy_timeout = 3000")
-        version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 1:
-            raise ValueError("La base de datos pertenece a una versión más reciente.")
-        if version == 0:
-            self._initialize()
+        try:
+            version = self.db.execute("PRAGMA user_version").fetchone()[0]
+            if version > 2:
+                raise ValueError("La base de datos pertenece a una versión más reciente.")
+            if version == 0:
+                self._initialize()
+                version = 1
+            if version == 1:
+                self._migrate_v2()
+        except Exception:
+            self.db.close()
+            raise
+
+    def _migrate_v2(self) -> None:
+        with self.db:
+            # sqlite3 no inicia una transacción implícita para ALTER TABLE.
+            self.db.execute("BEGIN IMMEDIATE")
+            self.db.execute("ALTER TABLE templates ADD COLUMN crop_x REAL CHECK(crop_x >= 0)")
+            self.db.execute("ALTER TABLE templates ADD COLUMN crop_y REAL CHECK(crop_y >= 0)")
+            self.db.execute("ALTER TABLE templates ADD COLUMN crop_width REAL CHECK(crop_width > 0)")
+            self.db.execute("""ALTER TABLE templates ADD COLUMN crop_height REAL CHECK(crop_height > 0)
+                CHECK ((crop_x IS NULL AND crop_y IS NULL AND crop_width IS NULL AND crop_height IS NULL)
+                    OR (crop_x IS NOT NULL AND crop_y IS NOT NULL AND crop_width IS NOT NULL AND crop_height IS NOT NULL))""")
+            self.db.execute("PRAGMA user_version = 2")
 
     def _initialize(self) -> None:
         self.db.executescript("""
@@ -67,21 +86,31 @@ class Repository:
         with self.db:
             self.db.execute("INSERT INTO settings VALUES ('default_template', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (template_id,))
 
-    def create_template(self, name: str, width: int, height: int) -> Template:
-        template = Template(identifier(), name.strip(), width, height)
+    def create_template(self, name: str, width: int, height: int, *,
+                        crop_x: float | None = None, crop_y: float | None = None,
+                        crop_width: float | None = None, crop_height: float | None = None) -> Template:
+        return self.add_template(Template(identifier(), name.strip(), width, height,
+                                          crop_x, crop_y, crop_width, crop_height))
+
+    def add_template(self, template: Template) -> Template:
+        template = replace(template, name=template.name.strip())
         with self.db:
-            self.db.execute("INSERT INTO templates VALUES (?, ?, ?, ?)", astuple(template))
+            self.db.execute("""INSERT INTO templates
+                (id, name, width, height, crop_x, crop_y, crop_width, crop_height)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", astuple(template))
             if self.default_template_id() is None:
                 self.db.execute("INSERT INTO settings VALUES ('default_template', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (template.id,))
         return template
 
     def update_template(self, template: Template) -> None:
         with self.db:
-            self.db.execute("UPDATE templates SET name=?, width=?, height=? WHERE id=?",
-                            (template.name.strip(), template.width, template.height, template.id))
+            self.db.execute("""UPDATE templates SET name=?, width=?, height=?, crop_x=?, crop_y=?,
+                crop_width=?, crop_height=? WHERE id=?""",
+                            (template.name.strip(), template.width, template.height,
+                             template.crop_x, template.crop_y, template.crop_width, template.crop_height, template.id))
 
     def duplicate_template(self, template: Template) -> Template:
-        return self.create_template(template.name + " copia", template.width, template.height)
+        return self.add_template(replace(template, id=identifier(), name=template.name + " copia"))
 
     def delete_template(self, template_id: str) -> None:
         with self.db:

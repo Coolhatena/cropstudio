@@ -20,9 +20,29 @@ class Template:
     name: str
     width: int
     height: int
+    crop_x: float | None = None
+    crop_y: float | None = None
+    crop_width: float | None = None
+    crop_height: float | None = None
 
     def __post_init__(self) -> None:
         validate_output(self.name, self.width, self.height)
+        values = (self.crop_x, self.crop_y, self.crop_width, self.crop_height)
+        present = [value is not None for value in values]
+        if any(present) and not all(present):
+            raise ValueError("La posición y el tamaño deben indicarse completos.")
+        if geometry := self.geometry:
+            x, y, width, height = geometry
+            if not all(isfinite(value) for value in geometry) or min(x, y) < 0 or min(width, height) <= 0:
+                raise ValueError("La posición debe ser finita y no negativa, y el tamaño debe ser positivo.")
+            if not abs(width / height / (self.width / self.height) - 1) < 1e-5:
+                raise ValueError("La proporción del recorte no coincide con la salida. Corrige la geometría antes de guardar la plantilla.")
+
+    @property
+    def geometry(self) -> tuple[float, float, float, float] | None:
+        if self.crop_x is None or self.crop_y is None or self.crop_width is None or self.crop_height is None:
+            return None
+        return self.crop_x, self.crop_y, self.crop_width, self.crop_height
 
     @property
     def ratio(self) -> tuple[int, int]:
@@ -32,7 +52,8 @@ class Template:
     @property
     def label(self) -> str:
         a, b = self.ratio
-        return f"{self.name} · {self.width} × {self.height} ({a}:{b})"
+        mode = "Geometría fija" if self.geometry else "Centrado automático"
+        return f"{self.name} · {self.width} × {self.height} ({a}:{b}) · {mode}"
 
 
 @dataclass(frozen=True)

@@ -1,17 +1,22 @@
 from collections.abc import Callable
 
-from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
                               QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox,
-                              QPushButton, QSpinBox, QVBoxLayout)
+                              QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
-from models.entities import Template
+from models.entities import Template, identifier
 from storage.repository import Repository
 
 
 class TemplateForm(QDialog):
-    def __init__(self, template: Template | None = None, parent=None):
+    def __init__(self, template: Template | None = None, parent=None, *,
+                 on_save: Callable[[Template], Template | None] | None = None,
+                 title: str | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Editar plantilla" if template else "Nueva plantilla")
+        self.setWindowTitle(title or ("Editar plantilla" if template else "Nueva plantilla"))
+        self.template = template
+        self.on_save = on_save
+        self.saved_template: Template | None = None
         layout = QFormLayout(self)
         self.name = QLineEdit(template.name if template else "")
         self.width, self.height = QSpinBox(), QSpinBox()
@@ -27,11 +32,41 @@ class TemplateForm(QDialog):
         layout.addRow("Proporción", self.ratio)
         self.width.valueChanged.connect(self.update_ratio)
         self.height.valueChanged.connect(self.update_ratio)
+        self.fixed_geometry = QCheckBox("Guardar posición y tamaño")
+        self.fixed_geometry.setChecked(template is None or template.geometry is not None)
+        layout.addRow(self.fixed_geometry)
+        note = QLabel("Posición y tamaño en píxeles de la imagen original, después de aplicar la orientación EXIF. Sin esta opción se usará el centrado automático.")
+        note.setWordWrap(True)
+        layout.addRow(note)
+        self.geometry_widget = QWidget()
+        geometry_layout = QFormLayout(self.geometry_widget)
+        geometry_layout.setContentsMargins(0, 0, 0, 0)
+        keys = ("crop_x", "crop_y", "crop_width", "crop_height")
+        geometry = template.geometry if template else None
+        initial = geometry or (0., 0., float(self.width.value()), float(self.height.value()))
+        # Conservar los valores originales incluso si el control redondea su presentación.
+        self._geometry_values = dict(zip(keys, initial))
+        self.geometry_fields: dict[str, QDoubleSpinBox] = {}
+        for key, label in zip(keys, ("X", "Y", "Ancho del recorte", "Alto del recorte")):
+            field = QDoubleSpinBox()
+            field.setDecimals(8)
+            field.setRange(0 if key in {"crop_x", "crop_y"} else 0.00000001, 1000000000)
+            field.setKeyboardTracking(False)
+            field.setValue(self._geometry_values[key])
+            field.valueChanged.connect(lambda value, key=key: self._set_geometry_value(key, value))
+            self.geometry_fields[key] = field
+            geometry_layout.addRow(label, field)
+        self.geometry_widget.setEnabled(self.fixed_geometry.isChecked())
+        self.fixed_geometry.toggled.connect(self.geometry_widget.setEnabled)
+        layout.addRow(self.geometry_widget)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.validate)
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
         self.update_ratio()
+
+    def _set_geometry_value(self, key: str, value: float) -> None:
+        self._geometry_values[key] = value
 
     def update_ratio(self) -> None:
         a, b = Template("", "proporción", self.width.value(), self.height.value()).ratio
@@ -41,6 +76,19 @@ class TemplateForm(QDialog):
         if not self.name.text().strip():
             QMessageBox.warning(self, "Nombre requerido", "Escribe un nombre para la plantilla.")
             return
+        try:
+            geometry = self._geometry_values if self.fixed_geometry.isChecked() else {}
+            candidate = Template(self.template.id if self.template else identifier(),
+                                 self.name.text().strip(), self.width.value(), self.height.value(), **geometry)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Plantilla no válida", str(exc))
+            return
+        try:
+            saved = self.on_save(candidate) if self.on_save else None
+        except Exception as exc:
+            QMessageBox.critical(self, "No se pudo guardar la plantilla", str(exc))
+            return
+        self.saved_template = saved or candidate
         self.accept()
 
 
@@ -88,16 +136,14 @@ class TemplateManager(QDialog):
         return self.templates[index] if index >= 0 else None
 
     def create(self) -> None:
-        dialog = TemplateForm(parent=self)
+        dialog = TemplateForm(parent=self, on_save=self.repository.add_template)
         if dialog.exec():
-            result = self.repository.create_template(dialog.name.text(), dialog.width.value(), dialog.height.value())
-            self.refresh(result.id)
+            self.refresh(dialog.saved_template.id)
 
     def edit(self) -> None:
         if template := self.selected():
-            dialog = TemplateForm(template, self)
+            dialog = TemplateForm(template, self, on_save=self.repository.update_template)
             if dialog.exec():
-                self.repository.update_template(Template(template.id, dialog.name.text().strip(), dialog.width.value(), dialog.height.value()))
                 self.refresh(template.id)
 
     def duplicate(self) -> None:

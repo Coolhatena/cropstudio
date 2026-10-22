@@ -11,10 +11,10 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog
 
 from models.entities import Crop, ImageRecord, Project, identifier
 from services.export import ExportJob, ExportResult, ExportWorker
-from services.geometry import fit_rect, from_template
+from services.geometry import fit_rect, from_template, template_from_crop
 from services.images import load_oriented, scan_images, thumbnail, to_qimage
 from storage.repository import Repository
-from ui.dialogs import ExportOptions, TemplateManager
+from ui.dialogs import ExportOptions, TemplateForm, TemplateManager
 from ui.editor import CropEditor
 
 
@@ -113,8 +113,13 @@ class MainWindow(QMainWindow):
         self.template_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.template_combo.currentIndexChanged.connect(self.update_actions)
         right_layout.addWidget(self.template_combo)
+        self.template_info = QLabel()
+        self.template_info.setWordWrap(True)
+        right_layout.addWidget(self.template_info)
         self.template_button = button("Nuevo recorte desde plantilla", self.add_from_template, True)
         right_layout.addWidget(self.template_button)
+        self.save_template_button = button("Guardar recorte como plantilla", self.save_crop_as_template)
+        right_layout.addWidget(self.save_template_button)
         right_layout.addWidget(button("Gestionar plantillas…", self.manage_templates))
         right_layout.addWidget(heading("Recortes de la imagen"))
         self.crop_list = QListWidget()
@@ -135,7 +140,7 @@ class MainWindow(QMainWindow):
         self.name_edit.editingFinished.connect(self.apply_fields)
         form.addRow("Nombre", self.name_edit)
         self.geometry_fields: dict[str, QDoubleSpinBox] = {}
-        for key, label in [("x", "X"), ("y", "Y"), ("width", "Ancho original"), ("height", "Alto original")]:
+        for key, label in [("x", "X"), ("y", "Y"), ("width", "Ancho del recorte"), ("height", "Alto del recorte")]:
             field = QDoubleSpinBox()
             field.setDecimals(4)
             field.setRange(0 if key in {"x", "y"} else 0.0001, 1000000)
@@ -200,21 +205,35 @@ class MainWindow(QMainWindow):
     def update_actions(self, *_args) -> None:
         valid = self.pil_image is not None
         self.template_button.setEnabled(valid and self.template_combo.currentIndex() >= 0)
+        index = self.template_combo.currentIndex()
+        if index >= 0:
+            template = self.templates[index]
+            self.template_info.setText("Geometría fija" if template.geometry else "Centrado automático")
+            self.template_combo.setToolTip(self.template_combo.itemData(index, Qt.ItemDataRole.ToolTipRole))
+        else:
+            self.template_info.setText("Sin plantillas")
+            self.template_combo.setToolTip("")
         self.draw_button.setEnabled(valid)
         self.export_button.setEnabled(self.project is not None and not (self.worker and self.worker.isRunning()))
         active = self.active_crop() is not None
+        self.save_template_button.setEnabled(active and valid)
         self.fields_widget.setEnabled(active and valid)
         self.duplicate_button.setEnabled(active)
         self.delete_button.setEnabled(active)
 
-    def refresh_templates(self) -> None:
+    def refresh_templates(self, selected_id: str | None = None) -> None:
         self.templates = self.repository.templates()
         self.template_combo.blockSignals(True)
         self.template_combo.clear()
-        default = self.repository.default_template_id()
+        target = selected_id or self.repository.default_template_id()
         for index, template in enumerate(self.templates):
             self.template_combo.addItem(template.label, template.id)
-            if template.id == default:
+            if template.geometry:
+                x, y, width, height = template.geometry
+                self.template_combo.setItemData(index, f"{template.label}\nX: {x:g} · Y: {y:g}\nRecorte: {width:g} × {height:g} px", Qt.ItemDataRole.ToolTipRole)
+            else:
+                self.template_combo.setItemData(index, template.label, Qt.ItemDataRole.ToolTipRole)
+            if template.id == target:
                 self.template_combo.setCurrentIndex(index)
         self.template_combo.blockSignals(False)
         self.update_actions()
@@ -228,6 +247,21 @@ class MainWindow(QMainWindow):
             if crop.template_id not in valid_ids:
                 crop.template_id = None
         self.refresh_templates()
+
+    def save_crop_as_template(self) -> None:
+        crop = self.active_crop()
+        if not crop or not self.pil_image or not self.persist():
+            return
+        try:
+            crop.validate(*self.pil_image.size)
+            template = template_from_crop(crop)
+        except ValueError as exc:
+            QMessageBox.warning(self, "No se puede guardar como plantilla", str(exc))
+            return
+        dialog = TemplateForm(template, self, on_save=self.repository.add_template,
+                              title="Guardar recorte como plantilla")
+        if dialog.exec():
+            self.refresh_templates(dialog.saved_template.id)
 
     def choose_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Carpeta de imágenes", self.settings.value("folder", ""))
@@ -425,7 +459,12 @@ class MainWindow(QMainWindow):
     def add_from_template(self) -> None:
         index = self.template_combo.currentIndex()
         if self.pil_image and self.current_image and index >= 0:
-            self.add_crop(from_template(self.templates[index], self.current_image.id, *self.pil_image.size, len(self.crops)+1))
+            try:
+                crop = from_template(self.templates[index], self.current_image.id, *self.pil_image.size, len(self.crops)+1)
+            except ValueError as exc:
+                QMessageBox.warning(self, "No se puede aplicar la plantilla", str(exc))
+                return
+            self.add_crop(crop)
 
     def start_draw(self) -> None:
         if self.pil_image:

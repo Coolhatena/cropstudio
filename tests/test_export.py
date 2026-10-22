@@ -10,7 +10,7 @@ import pytest
 
 from models.entities import Template
 from services.export import ExportJob, export_jobs
-from services.geometry import from_template
+from services.geometry import from_template, template_from_crop
 from services.images import load_oriented, scan_images
 
 
@@ -61,6 +61,7 @@ def test_exif_and_decimal_bounds(tmp_path, format_name):
     assert oriented.size == (60, 120)
     crop = from_template(Template("t", "Vertical", 30, 60), "i", 60, 120, 1)
     crop.x, crop.y, crop.width, crop.height = 0.25, 0.5, 59.5, 119
+    crop = from_template(template_from_crop(crop), "i", *oriented.size, 1)
     result = export_jobs([ExportJob(path, crop, 1)], tmp_path / "out", format_name, 90, Event())
     assert not result.errors
     with open_export(result.written[0]) as exported:
@@ -111,3 +112,22 @@ def test_scan_recursive(tmp_path):
     for name in ["a.JPG", "b.jpeg", "ñ/c.PNG", "d.webp", "no.txt"]:
         (tmp_path / name).touch()
     assert scan_images(tmp_path) == ["a.JPG", "b.jpeg", "d.webp", "ñ/c.PNG"]
+
+
+@pytest.mark.parametrize("format_name", ["JPG", "PNG", "WEBP", "SVG"])
+def test_fixed_template_exports_same_region_on_different_images(tmp_path, format_name):
+    template = Template("fixed", "Azul", 20, 20, 20, 10, 10, 10)
+    jobs = []
+    for number, size in enumerate([(40, 30), (80, 60)], 1):
+        source = tmp_path / f"foto_{number}.png"
+        image = Image.new("RGBA", size, (255, 0, 0, 255))
+        image.paste((0, 0, 255, 120), (10, 0, size[0], size[1]))
+        image.save(source)
+        jobs.append(ExportJob(source, from_template(template, str(number), *size, 1), 1))
+    result = export_jobs(jobs, tmp_path / "fixed", format_name, 90, Event())
+    assert not result.errors and len(result.written) == 2
+    for path in result.written:
+        with open_export(path) as exported:
+            assert exported.size == (20, 20)
+            if format_name in {"PNG", "SVG"}:
+                assert exported.tobytes() == bytes((0, 0, 255, 120)) * 400
