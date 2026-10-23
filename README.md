@@ -1,7 +1,9 @@
 # Crop Studio
 
-Editor de escritorio para Windows con PySide6. Los originales permanecen intactos: los proyectos,
-plantillas globales y recortes se guardan en `%LOCALAPPDATA%\CropStudio\cropstudio.sqlite3`.
+Editor de escritorio para Windows con PySide6. 
+
+Las imagenes originales permanecen intactas: los proyectos,
+plantillas globales y recortes se guardan en `CropStudio\cropstudio.sqlite3`.
 
 ## Instalar y ejecutar
 
@@ -30,22 +32,6 @@ uv run python main.py
    Después elige una **carpeta contenedora**: dentro se creará `<nombre_del_proyecto>_recortes`,
    conservando las subcarpetas de cada imagen. La exportación muestra el destino, el progreso y
    permite cancelar; los archivos terminados se conservan.
-
-Por ejemplo, si abres `SELECCIONES DEPORTIVAS` y eliges `D:\Exportaciones` como carpeta contenedora:
-
-```text
-Origen:
-SELECCIONES DEPORTIVAS/CAMPUS MEXICALI/NATACIÓN/EQUIPO/foto.jpg
-
-Recorte JPG exportado:
-D:/Exportaciones/SELECCIONES DEPORTIVAS_recortes/CAMPUS MEXICALI/NATACIÓN/EQUIPO/foto_crop_01.jpg
-```
-
-Se crean únicamente las subcarpetas necesarias al escribir recortes válidos, sin copiar carpetas
-vacías, originales ni otros archivos. Las imágenes de la raíz se exportan directamente dentro
-de `<nombre_del_proyecto>_recortes`. Al exportar solo la imagen actual también se conserva toda
-su ruta relativa. Si la carpeta de salida ya existe, se reutiliza; los nombres repetidos reciben
-sufijos dentro de cada subcarpeta, sin sobrescribir archivos de exportaciones anteriores.
 
 Para repetir un encuadre, selecciona un recorte y pulsa **Guardar recorte como plantilla**.
 El formulario copia su nombre, X, Y, ancho y alto del recorte, y dimensiones de salida. Puedes
@@ -99,16 +85,3 @@ uv run pyinstaller --noconfirm CropStudio.spec
 # Comprobación de arranque sin abrir una ventana interactiva:
 .\dist\CropStudio\CropStudio.exe --smoke-test .\build\smoke-result.json
 ```
-
-Distribuye la carpeta completa `dist\CropStudio`, no solo el `.exe`. El ejecutable es local y no
-está firmado digitalmente. Las pruebas Qt usan la plataforma `offscreen` y bases SQLite temporales;
-incluyen un flujo con 100 imágenes, reinicio, exportación y comparación de originales.
-
-Validación local completada en Windows 11 con Python 3.14.7: **121 pruebas aprobadas**, empaquetado
-con PyInstaller y arranque/cierre del ejecutable con la plataforma nativa de Windows (código 0,
-cuatro plantillas disponibles). La interacción se comprobó con pruebas Qt automatizadas y una
-captura del editor; no se realizó una sesión manual prolongada ni se probó en otros equipos.
-La suite incluye migración y rollback del esquema, geometría fija con precisión decimal, creación
-desde un recorte, repetición en distintas imágenes, avisos de límites y exportación JPG/PNG/WEBP/SVG.
-También verifica la jerarquía de carpetas con nombres Unicode, exportación de una sola imagen,
-reutilización del destino, límites de rutas, errores por rama y cancelación sin crear ramas pendientes.
