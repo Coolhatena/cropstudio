@@ -163,7 +163,7 @@ class TemplateManager(QDialog):
 
 
 class ExportOptions(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, project_name: str | None = None):
         super().__init__(parent)
         self.setWindowTitle("Exportación")
         layout = QFormLayout(self)
@@ -178,6 +178,13 @@ class ExportOptions(QDialog):
         layout.addRow("Exportar", self.scope)
         layout.addRow("Formato", self.format)
         layout.addRow("Calidad", self.quality)
+        folder_name = f"{project_name or 'nombre_del_proyecto'}_recortes"
+        self.destination_note = QLabel(
+            f"Seleccionarás una carpeta contenedora. Dentro se creará «{folder_name}», "
+            "conservando las subcarpetas de las imágenes. Solo se crearán las carpetas necesarias para los recortes."
+        )
+        self.destination_note.setWordWrap(True)
+        layout.addRow(self.destination_note)
         self.svg_note = QLabel("SVG incluye el recorte como imagen PNG incrustada; conserva la transparencia y no vectoriza la imagen.")
         self.svg_note.setWordWrap(True)
         self.svg_note.hide()

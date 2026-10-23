@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog
                               QSpinBox, QSplitter, QVBoxLayout, QWidget)
 
 from models.entities import Crop, ImageRecord, Project, identifier
-from services.export import ExportJob, ExportResult, ExportWorker
+from services.export import ExportJob, ExportResult, ExportWorker, export_root
 from services.geometry import fit_rect, from_template, template_from_crop
 from services.images import load_oriented, scan_images, thumbnail, to_qimage
 from storage.repository import Repository
@@ -564,31 +564,33 @@ class MainWindow(QMainWindow):
                 return
             self.worker.deleteLater()
             self.worker = None
-        options = ExportOptions(self)
+        options = ExportOptions(self, project_name=Path(self.project.folder).name or "Proyecto")
         if not options.exec():
             return
-        folder = QFileDialog.getExistingDirectory(self, "Carpeta de exportación")
+        folder = QFileDialog.getExistingDirectory(self, "Selecciona la carpeta contenedora de los recortes")
         if not folder:
             return
         jobs = []
         records = [self.current_image] if options.scope.currentIndex() == 1 and self.current_image else self.images
         try:
+            destination = export_root(Path(self.project.folder), Path(folder))
             for record in records:
                 for number, crop in enumerate(self.repository.crops(record.id), 1):
-                    jobs.append(ExportJob(Path(self.project.folder)/record.relative_path, replace(crop), number))
+                    jobs.append(ExportJob(Path(self.project.folder)/record.relative_path, replace(crop), number,
+                                          relative_path=Path(record.relative_path)))
         except Exception as exc:
             QMessageBox.critical(self, "No se pudo preparar la exportación", str(exc))
             return
         if not jobs:
             QMessageBox.information(self, "Sin recortes", "No hay recortes para exportar.")
             return
-        self.progress = QProgressDialog("Exportando recortes…", "Cancelar", 0, len(jobs), self)
+        self.progress = QProgressDialog(f"Exportando recortes…\nDestino: {destination}", "Cancelar", 0, len(jobs), self)
         self.progress.setWindowTitle("Exportación")
         self.progress.setWindowModality(Qt.WindowModality.WindowModal)
         self.progress.setMinimumDuration(0)
         self.progress.setAutoClose(False)
         self.progress.setAutoReset(False)
-        self.worker = ExportWorker(jobs, Path(folder), options.format.currentText(), options.quality.value(), self)
+        self.worker = ExportWorker(jobs, destination, options.format.currentText(), options.quality.value(), self)
         self.progress.canceled.connect(self.worker.cancel_event.set)
         self.worker.progress.connect(lambda value, total: self.progress.setValue(value))
         self.worker.completed.connect(self.export_completed)
@@ -603,6 +605,8 @@ class MainWindow(QMainWindow):
             text += " Exportación cancelada; se conservan los archivos completados."
         if result.errors:
             text += f"\n{len(result.errors)} errores."
+        if result.destination is not None:
+            text += f"\nDestino: {result.destination}"
         message = QMessageBox(self)
         message.setWindowTitle("Resultado de exportación")
         message.setText(text)

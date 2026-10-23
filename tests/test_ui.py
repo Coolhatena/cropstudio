@@ -6,7 +6,7 @@ from threading import Event
 from PIL import Image
 import pytest
 from PySide6.QtCore import QPointF, Qt, QTimer
-from PySide6.QtWidgets import QApplication, QDialogButtonBox, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialogButtonBox, QFileDialog, QMessageBox
 
 from models.entities import Template
 from services.export import ExportJob, ExportWorker, export_jobs
@@ -322,6 +322,72 @@ def test_export_worker_completes_through_qt_signals(qtbot, tmp_path):
     worker.wait(15000)
     result = signal.args[0]
     assert not result.errors and len(result.written) == 1
+
+
+@pytest.mark.parametrize("scope", [0, 1])
+def test_export_ui_uses_container_and_relative_paths(qtbot, tmp_path, monkeypatch, scope):
+    project = tmp_path / "SELECCIONES DEPORTIVAS"
+    relatives = ["portada.png", "CAMPUS ENSENADA/Fútbol/foto.png",
+                 "CAMPUS MEXICALI/NATACIÓN/EQUIPO/foto.png"]
+    for relative in relatives:
+        source = project / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (30, 30), "blue").save(source)
+    (project / "CAMPUS ENSENADA/Flag").mkdir()
+    window = MainWindow(Repository(tmp_path / "ui-export.sqlite3"))
+    qtbot.addWidget(window)
+    window.show()
+    window.open_folder(project)
+    for index in range(len(window.images)):
+        window.image_list.setCurrentRow(index)
+        window.manual_crop((0, 0, 20, 20))
+    selected = next(i for i, record in enumerate(window.images) if record.relative_path == relatives[2])
+    window.image_list.setCurrentRow(selected)
+    container = tmp_path / "Exportaciones"
+    container.mkdir()
+    destination = container / "SELECCIONES DEPORTIVAS_recortes"
+    notes, titles, messages = [], [], []
+
+    def accept_options(dialog):
+        notes.append(dialog.destination_note.text())
+        dialog.scope.setCurrentIndex(scope)
+        dialog.format.setCurrentText("PNG")
+        return dialog.DialogCode.Accepted
+
+    def choose_container(parent, title):
+        titles.append(title)
+        return str(container)
+
+    monkeypatch.setattr(ExportOptions, "exec", accept_options)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", choose_container)
+    monkeypatch.setattr(QMessageBox, "exec", lambda message: messages.append(message.text()))
+    window.start_export()
+    worker = window.worker
+    qtbot.waitUntil(lambda: bool(messages) and not worker.isRunning(), timeout=15000)
+    assert len(notes) == 1 and "SELECCIONES DEPORTIVAS_recortes" in notes[0]
+    assert titles == ["Selecciona la carpeta contenedora de los recortes"]
+    assert str(destination) in window.progress.labelText()
+    assert str(destination) in messages[0]
+    expected_relatives = [relatives[2]] if scope == 1 else relatives
+    expected = {Path(relative).parent / f"{Path(relative).stem}_crop_01.png" for relative in expected_relatives}
+    assert {p.relative_to(destination) for p in destination.rglob("*") if p.is_file()} == expected
+    assert {job.relative_path for job in worker.jobs} == {Path(relative) for relative in expected_relatives}
+    assert not (destination / "CAMPUS ENSENADA/Flag").exists()
+    if scope == 1:
+        assert not (destination / "CAMPUS ENSENADA").exists()
+    for relative in expected:
+        with Image.open(destination / relative) as image:
+            assert image.size == (20, 20)
+
+
+def test_export_container_selection_cancelled_writes_nothing(qtbot, tmp_path, monkeypatch):
+    window, folder = create_window(qtbot, tmp_path)
+    window.add_from_template()
+    monkeypatch.setattr(ExportOptions, "exec", lambda dialog: dialog.DialogCode.Accepted)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args: "")
+    window.start_export()
+    assert window.worker is None
+    assert not (folder.parent / f"{folder.name}_recortes").exists()
 
 
 def test_manual_crop_mismatch_and_explicit_correction(qtbot, tmp_path):

@@ -1,7 +1,7 @@
 from base64 import b64encode
 from dataclasses import dataclass
 from io import BytesIO
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from threading import Event
 from typing import BinaryIO, Callable
 
@@ -17,6 +17,7 @@ class ExportJob:
     source: Path
     crop: Crop
     number: int
+    relative_path: Path | None = None
 
 
 @dataclass
@@ -24,6 +25,24 @@ class ExportResult:
     written: list[Path]
     errors: list[str]
     cancelled: bool = False
+    destination: Path | None = None
+
+
+def export_root(project_folder: Path, container: Path) -> Path:
+    return (container / f"{project_folder.name or 'Proyecto'}_recortes").resolve()
+
+
+def job_directory(job: ExportJob, destination: Path) -> Path:
+    """Calcula la subcarpeta sin permitir rutas ancladas ni escapes del destino."""
+    directory = destination
+    if job.relative_path is not None:
+        relative = PureWindowsPath(job.relative_path)
+        if relative.anchor or ".." in relative.parts or not relative.name:
+            raise ValueError("La ruta de la imagen debe ser relativa y permanecer dentro del destino.")
+        directory = destination.joinpath(*relative.parts[:-1])
+    if not directory.resolve().is_relative_to(destination.resolve()):
+        raise ValueError("La carpeta del recorte queda fuera de la raíz de destino.")
+    return directory
 
 
 def save_svg(image: Image.Image, stream: BinaryIO) -> None:
@@ -60,8 +79,7 @@ def export_jobs(jobs: list[ExportJob], destination: Path, format_name: str, qual
                 cancel: Event, progress: Callable[[int, int], None] | None = None) -> ExportResult:
     if format_name not in {"JPG", "PNG", "WEBP", "SVG"} or not 1 <= quality <= 100:
         raise ValueError("Formato o calidad inválidos.")
-    destination.mkdir(parents=True, exist_ok=True)
-    result = ExportResult([], [])
+    result = ExportResult([], [], destination=destination)
     image = None
     current_source = None
     try:
@@ -72,6 +90,7 @@ def export_jobs(jobs: list[ExportJob], destination: Path, format_name: str, qual
             reserved = None
             output = None
             try:
+                directory = job_directory(job, destination)
                 if current_source != job.source:
                     if image is not None:
                         image.close()
@@ -92,7 +111,8 @@ def export_jobs(jobs: list[ExportJob], destination: Path, format_name: str, qual
                     background.paste(output, mask=output.getchannel("A"))
                     output.close()
                     output = background
-                reserved, stream = unique_file(destination, f"{job.source.stem}_crop_{job.number:02d}", format_name.lower())
+                directory.mkdir(parents=True, exist_ok=True)
+                reserved, stream = unique_file(directory, f"{job.source.stem}_crop_{job.number:02d}", format_name.lower())
                 try:
                     with stream:
                         if format_name == "SVG":
@@ -105,7 +125,7 @@ def export_jobs(jobs: list[ExportJob], destination: Path, format_name: str, qual
                     raise
                 result.written.append(reserved)
             except Exception as exc:
-                result.errors.append(f"{job.source.name} / {job.crop.name}: {exc}")
+                result.errors.append(f"{job.relative_path or job.source.name} / {job.crop.name}: {exc}")
             finally:
                 if output is not None:
                     output.close()
@@ -131,5 +151,5 @@ class ExportWorker(QThread):
             result = export_jobs(self.jobs, self.destination, self.format_name, self.quality,
                                  self.cancel_event, self.progress.emit)
         except Exception as exc:
-            result = ExportResult([], [str(exc)])
+            result = ExportResult([], [str(exc)], destination=self.destination)
         self.completed.emit(result)
